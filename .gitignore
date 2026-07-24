@@ -1,0 +1,7 @@
+CLAUDE.md
+*.local.md
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+*.pkl
