@@ -1,0 +1,64 @@
+# 학습 CronJob (ADR-0010 C2). product-forecast namespace, ServiceAccount forecast.
+#
+# Prometheus·MLflow는 클러스터 내부(ClusterIP)로 접근한다 — tailnet 불필요.
+# MLFLOW_TRACKING_URI의 Host(mlflow.platform-mlops.svc.cluster.local:5000)는
+# MLflow --allowed-hosts에 포함돼 있어야 한다(DNS-rebinding 보호). --serve-artifacts
+# 프록시 덕에 S3 크레덴셜은 불필요.
+#
+# 이미지 태그는 sha-<12자> 불변 핀. 학습 코드가 바뀌면 CI가 새 sha를 빌드하고,
+# 이 파일의 image 태그를 그 sha로 범프하는 PR을 올린다(자동 범프 없음, pulse 관례).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: telemetry-forecaster-train
+  namespace: product-forecast
+  labels:
+    app.kubernetes.io/name: telemetry-forecaster-train
+    app.kubernetes.io/part-of: product-forecast
+    app.kubernetes.io/managed-by: argocd
+spec:
+  schedule: "0 */6 * * *"          # 6시간마다 재학습 (보존 ~5일, 완만한 변화)
+  concurrencyPolicy: Forbid         # 이전 학습이 안 끝났으면 겹치지 않음
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900     # 15분 상한 (학습은 수십 초 규모)
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: telemetry-forecaster-train
+            app.kubernetes.io/part-of: product-forecast
+        spec:
+          serviceAccountName: forecast
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: train
+              image: ghcr.io/yhsk9200/aporiax-forecast-train:sha-026a67c10e5f
+              env:
+                - name: PROMETHEUS_URL
+                  value: http://platform-monitoring-promet-prometheus.platform-monitoring.svc.cluster.local:9090
+                - name: MLFLOW_TRACKING_URI
+                  value: http://mlflow.platform-mlops.svc.cluster.local:5000
+                - name: MLFLOW_EXPERIMENT
+                  value: telemetry-forecaster
+                - name: MODEL_NAME
+                  value: telemetry-forecaster
+              resources:
+                requests:
+                  cpu: 200m
+                  memory: 256Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
