@@ -1,0 +1,109 @@
+name: bake-and-promote
+
+# champion 모델을 서빙 이미지에 구워(bake) GHCR에 올리고, 서빙 태그를 범프하는
+# 승격 PR을 자동 생성한다 (ADR-0010 승격 = 이미지 베이킹 PR). 롤백 = 그 PR revert.
+#
+# 사람이 MLflow에서 champion alias를 지정한 뒤 수동 실행(workflow_dispatch)한다.
+# 러너는 tailnet 밖이므로 tailscale로 임시(ephemeral) 편입해 tailnet 전용 MLflow에서
+# champion을 pull한다 — 상시 노출·상시 러너 없이 필요한 순간에만.
+#
+# 필요한 시크릿 (수동 발급·등록, 시크릿 경계):
+#   TS_AUTHKEY    Tailscale ephemeral auth key (러너 tailnet 편입)
+#   PROMOTE_PAT   fine-grained PAT(contents:RW, pull-requests:RW). 승격 PR이 CI를
+#                 트리거해 브랜치 보호 필수 체크를 타게 하려면 필요 — GITHUB_TOKEN이
+#                 만든 PR은 재귀 방지로 워크플로우를 트리거하지 못한다.
+on:
+  workflow_dispatch:
+    inputs:
+      model_name:
+        description: MLflow registered model name
+        default: telemetry-forecaster
+      alias:
+        description: model alias to promote (비우고 version 사용 가능)
+        default: champion
+      model_version:
+        description: (선택) alias 대신 직접 지정할 버전
+        default: ""
+
+jobs:
+  bake:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Join tailnet (ephemeral)
+        uses: tailscale/github-action@v3
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          tags: tag:ci
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Pull champion from MLflow
+        id: champ
+        env:
+          MLFLOW_TRACKING_URI: http://100.69.52.25:30500
+          MODEL_NAME: ${{ inputs.model_name }}
+          ALIAS: ${{ inputs.alias }}
+          MODEL_VERSION: ${{ inputs.model_version }}
+        run: |
+          pip install --quiet mlflow==3.6.0 scikit-learn==1.6.1 joblib==1.4.2
+          python bake/pull_champion.py
+
+      - name: Compute image tag
+        id: meta
+        run: |
+          echo "image=ghcr.io/${{ github.repository_owner }}/aporiax-forecast-serve" >> "$GITHUB_OUTPUT"
+          echo "tag=mv${{ steps.champ.outputs.version }}-$(echo ${{ github.sha }} | cut -c1-8)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push serving image (model baked)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: serve/Dockerfile
+          push: true
+          platforms: linux/arm64
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+
+      # ADR-0006 회귀 가드
+      - name: Verify linux/arm64 manifest
+        run: |
+          INSPECT=$(docker buildx imagetools inspect "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}")
+          echo "$INSPECT" | grep -q "linux/arm64" || { echo "::error::linux/arm64 missing"; exit 1; }
+
+      - name: Render serving manifest
+        run: |
+          mkdir -p deploy/manifests
+          sed "s#__IMAGE__#${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}#" \
+            serve/serving.template.yaml > deploy/manifests/serving.yaml
+
+      - name: Open promotion PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.PROMOTE_PAT }}
+          branch: promote/${{ steps.meta.outputs.tag }}
+          add-paths: deploy/manifests/serving.yaml
+          commit-message: "promote: ${{ inputs.model_name }} v${{ steps.champ.outputs.version }} baked → serving"
+          title: "promote: ${{ inputs.model_name }} v${{ steps.champ.outputs.version }} → serving (${{ steps.meta.outputs.tag }})"
+          body: |
+            champion 모델을 서빙 이미지에 베이킹한 승격 PR (ADR-0010).
+
+            - model: `${{ inputs.model_name }}` version **${{ steps.champ.outputs.version }}**
+            - run_id: `${{ steps.champ.outputs.run_id }}`
+            - MAE(MB): `${{ steps.champ.outputs.mae_mb }}`
+            - image: `${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}` (arm64)
+
+            머지하면 ArgoCD가 서빙을 롤아웃한다. 서빙은 런타임에 MLflow/NAS를
+            보지 않는다(모델이 이미지에 baked). 롤백 = 이 PR revert.

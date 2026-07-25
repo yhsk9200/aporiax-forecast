@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 .venv/
 *.pkl
+# baked 모델은 베이킹 워크플로우가 빌드 시점에 내려받는다 — 레포에 두지 않음.
+/model/

@@ -1,0 +1,78 @@
+# 서빙 매니페스트 템플릿 (ADR-0010 D1).
+# 베이킹 워크플로우가 __IMAGE__ 를 새 이미지 태그로 치환해
+# deploy/manifests/serving.yaml 로 렌더하고, 그 변경을 담은 승격 PR을 연다.
+# 직접 편집하지 말 것 — 배포되는 모델은 오직 베이킹 PR로만 바뀐다.
+#
+# env에 MLFLOW_TRACKING_URI가 없는 점에 주목: 서빙은 런타임에 MLflow/NAS를
+# 보지 않는다(모델이 이미지에 baked). Prometheus는 예측 입력(특징)용일 뿐이다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telemetry-forecaster-serving
+  namespace: product-forecast
+  labels:
+    app.kubernetes.io/name: telemetry-forecaster-serving
+    app.kubernetes.io/part-of: product-forecast
+    app.kubernetes.io/managed-by: argocd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: telemetry-forecaster-serving
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: telemetry-forecaster-serving
+        app.kubernetes.io/part-of: product-forecast
+    spec:
+      serviceAccountName: forecast
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: serving
+          image: __IMAGE__
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: PROMETHEUS_URL
+              value: http://platform-monitoring-promet-prometheus.platform-monitoring.svc.cluster.local:9090
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 300m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: telemetry-forecaster-serving
+  namespace: product-forecast
+  labels:
+    app.kubernetes.io/name: telemetry-forecaster-serving
+spec:
+  selector:
+    app.kubernetes.io/name: telemetry-forecaster-serving
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
