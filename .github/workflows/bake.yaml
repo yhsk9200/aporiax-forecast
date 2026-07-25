@@ -8,7 +8,9 @@ name: bake-and-promote
 # champion을 pull한다 — 상시 노출·상시 러너 없이 필요한 순간에만.
 #
 # 필요한 시크릿 (수동 발급·등록, 시크릿 경계):
-#   TS_AUTHKEY    Tailscale ephemeral auth key (러너 tailnet 편입)
+#   TS_AUTHKEY    Tailscale auth key (러너 tailnet 편입). **Reusable + Ephemeral**로
+#                 발급할 것 — single-use 키는 첫 실행에 소진되고, 이후 실행은 편입에
+#                 실패해도 "성공"으로 보고돼 다음 단계가 조용히 멈춘다(아래 확인 단계로 감지).
 #   PROMOTE_PAT   fine-grained PAT(contents:RW, pull-requests:RW). 승격 PR이 CI를
 #                 트리거해 브랜치 보호 필수 체크를 타게 하려면 필요 — GITHUB_TOKEN이
 #                 만든 PR은 재귀 방지로 워크플로우를 트리거하지 못한다.
@@ -28,6 +30,7 @@ on:
 jobs:
   bake:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write
@@ -38,7 +41,23 @@ jobs:
         uses: tailscale/github-action@v3
         with:
           authkey: ${{ secrets.TS_AUTHKEY }}
-          tags: tag:ci
+
+      # tailnet 편입이 "성공"으로 보고돼도 노드가 실제로 붙지 않은 채 진행되는
+      # 경우가 있었다(소진된 single-use auth key). 그때 다음 단계는 MLflow에
+      # TCP로 닿지 못해 조용히 수 분간 멈춘다 — 실패 원인이 로그에 남지 않는다.
+      # 그래서 편입 직후 노드 상태와 MLflow 도달성을 짧은 타임아웃으로 확인해
+      # 침묵하는 정지를 즉시 드러나는 실패로 바꾼다.
+      - name: Verify tailnet reachability
+        run: |
+          echo "::group::tailscale status"
+          tailscale status || true
+          echo "::endgroup::"
+          if ! curl -sS --max-time 15 -o /dev/null \
+                 -w "mlflow /health = %{http_code} in %{time_total}s\n" \
+                 http://100.69.52.25:30500/health; then
+            echo "::error::tailnet에서 MLflow(100.69.52.25:30500)에 닿지 못했습니다. auth key가 reusable인지, 노드가 tailnet에 실제로 등록됐는지 확인하세요."
+            exit 1
+          fi
 
       - uses: actions/setup-python@v5
         with:
@@ -46,11 +65,15 @@ jobs:
 
       - name: Pull champion from MLflow
         id: champ
+        timeout-minutes: 6
         env:
           MLFLOW_TRACKING_URI: http://100.69.52.25:30500
           MODEL_NAME: ${{ inputs.model_name }}
           ALIAS: ${{ inputs.alias }}
           MODEL_VERSION: ${{ inputs.model_version }}
+          # 기본값은 재시도를 길게 물고 늘어져 정지처럼 보인다 — 짧게 끊어 실패를 드러낸다.
+          MLFLOW_HTTP_REQUEST_TIMEOUT: "30"
+          MLFLOW_HTTP_REQUEST_MAX_RETRIES: "2"
         run: |
           pip install --quiet mlflow==3.6.0 scikit-learn==1.6.1 joblib==1.4.2
           python bake/pull_champion.py
