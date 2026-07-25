@@ -1,5 +1,5 @@
 # 서빙 매니페스트 템플릿 (ADR-0010 D1).
-# 베이킹 워크플로우가 ghcr.io/yhsk9200/aporiax-forecast-serve:mv1-076609b2 를 새 이미지 태그로 치환해
+# 베이킹 워크플로우가 ghcr.io/yhsk9200/aporiax-forecast-serve:mv1-4c7e6cf2 를 새 이미지 태그로 치환해
 # deploy/manifests/serving.yaml 로 렌더하고, 그 변경을 담은 승격 PR을 연다.
 # 직접 편집하지 말 것 — 배포되는 모델은 오직 베이킹 PR로만 바뀐다.
 #
@@ -33,7 +33,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: serving
-          image: ghcr.io/yhsk9200/aporiax-forecast-serve:mv1-076609b2
+          image: ghcr.io/yhsk9200/aporiax-forecast-serve:mv1-4c7e6cf2
           ports:
             - name: http
               containerPort: 8000
