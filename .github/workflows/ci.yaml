@@ -41,7 +41,8 @@ jobs:
       - name: Build train image (no push)
         uses: docker/build-push-action@v6
         with:
-          context: train
+          context: .
+          file: train/Dockerfile
           push: false
           platforms: linux/arm64
 
@@ -68,7 +69,8 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: train
+          context: .
+          file: train/Dockerfile
           push: true
           platforms: linux/arm64
           tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}

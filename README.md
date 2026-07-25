@@ -10,8 +10,10 @@
 
 ```
 deploy/manifests/   ArgoCD가 동기하는 배포 매니페스트
+forecaster/         학습·서빙 공유 특징·조회 로직 (train/serve skew 방지)
 train/              학습 코드 + 이미지
-serve/              서빙 코드 (예정)
+serve/              서빙 코드 + 이미지 (모델은 베이킹 시점에 주입)
+bake/               champion 모델을 서빙 이미지에 굽는 스크립트
 ```
 
 ## 학습 (train/)
@@ -21,6 +23,18 @@ serve/              서빙 코드 (예정)
 대상 series는 실측으로 정했습니다 — lag 특징이 예측력을 갖고(acf 5분 ≈ 0.58) 일주기가 실재하는(≈ 0.35) 유일한 후보입니다. CPU·load는 노이즈, pod 수는 상수, 파일시스템 사용률은 persistence가 자명하게 이겨 학습 가치가 없었습니다.
 
 접근은 전부 클러스터 내부(ClusterIP)입니다 — Prometheus·MLflow에 tailnet 없이 닿고, MLflow `--serve-artifacts`가 아티팩트 업로드를 프록시해 S3 크레덴셜도 불필요합니다. `train/`의 설정은 모두 환경변수로 덮어쓸 수 있습니다(`TARGET_QUERY`·`HORIZON_MIN`·`LOOKBACK_DAYS` 등).
+
+## 서빙 · 승격 (serve/, bake/)
+
+서빙 앱(FastAPI)은 **모델을 이미지에 구워** 실행합니다 — 시작 시 `/app/model`을 로드하고 런타임엔 MLflow/NAS를 보지 않습니다. 그래서 아티팩트 저장소 장애가 서비스 중 모델에 무영향이고, 롤백은 이전 이미지 태그로 되돌리는 `git revert` 한 줄입니다. 예측 입력(특징)은 현재 Prometheus에서 만들며, 특징 로직은 학습과 `forecaster/`를 공유해 skew를 배제합니다.
+
+- `GET /predict` — 지금 기준 30분 후 예측(JSON) + persistence 베이스라인 + 모델 버전
+- `GET /metrics` — 같은 예측을 Prometheus 게이지(`forecast_node_memory_mb` 등)로 노출
+- `GET /healthz` — probe
+
+**승격 = 이미지 베이킹 PR** (`.github/workflows/bake.yaml`). 사람이 MLflow에서 `champion` alias를 지정한 뒤 워크플로우를 수동 실행하면: 러너를 tailnet에 임시 편입 → champion 모델 pull → 서빙 이미지에 굽기 → GHCR push → 서빙 태그를 범프하는 PR 자동 생성. 사람이 PR을 머지하면 ArgoCD가 롤아웃합니다. 즉 모델 배포가 코드 배포와 동일한 CI·리뷰·롤백 경로를 탑니다.
+
+베이킹 실행에는 시크릿 2개가 필요합니다(수동 발급): `TS_AUTHKEY`(러너 tailnet 편입), `PROMOTE_PAT`(승격 PR이 CI를 트리거하도록 — GITHUB_TOKEN이 만든 PR은 워크플로우를 트리거하지 못함).
 
 ## 배포
 
