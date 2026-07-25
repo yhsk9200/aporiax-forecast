@@ -41,7 +41,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: train
-              image: ghcr.io/yhsk9200/aporiax-forecast-train:sha-026a67c10e5f
+              image: ghcr.io/yhsk9200/aporiax-forecast-train:sha-463d4d9bf720
               env:
                 - name: PROMETHEUS_URL
                   value: http://platform-monitoring-promet-prometheus.platform-monitoring.svc.cluster.local:9090
