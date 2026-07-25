@@ -1,0 +1,26 @@
+# 서빙 메트릭 스크레이프 (ADR-0010 D2). AppProject 화이트리스트가 ServiceMonitor를
+# 허용하는 근거가 이것 — 테넌트가 자기 서빙의 메트릭 노출을 소유한다.
+#
+# 플랫폼 Prometheus는 serviceMonitorSelectorNilUsesHelmValues: false로 떠 있어
+# 릴리스 라벨 없이도 이 ServiceMonitor를 로딩한다.
+#
+# /metrics는 스크레이프 시점에 Prometheus를 조회해 특징을 만들고 예측을 계산한다
+# (무상태). 그래서 interval을 짧게 두면 그만큼 조회가 늘어난다 — 30분 지평
+# 예측에 1분 해상도면 충분하다.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: telemetry-forecaster-serving
+  namespace: product-forecast
+  labels:
+    app.kubernetes.io/name: telemetry-forecaster-serving
+    app.kubernetes.io/part-of: product-forecast
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: telemetry-forecaster-serving
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 60s
+      scrapeTimeout: 30s
