@@ -1,0 +1,6 @@
+# 학습 파이프라인 의존성 (ADR-0010 C2). 이미지에 고정 핀 — 재현성.
+mlflow==3.6.0
+scikit-learn==1.6.1
+pandas==2.2.3
+numpy==2.1.3
+prometheus-api-client==0.5.7

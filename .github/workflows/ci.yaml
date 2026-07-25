@@ -1,0 +1,84 @@
+name: CI
+
+# 학습 이미지(train/) 빌드·푸시 + 배포 매니페스트 검증 (ADR-0010 C2).
+# pulse 테넌트 CI 관례 계승 — arm64 단일 아치(타깃이 arm64 OCI 노드),
+# push 시 sha-<12자> 불변 태그, arm64 매니페스트 가드.
+#
+# 승격/서빙 베이킹 워크플로우(Tailscale-in-CI)는 D1에서 별도로 추가한다.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-manifests:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-arm64.tar.gz | tar xz kubeconform
+          sudo mv kubeconform /usr/local/bin/
+      - name: Validate deploy manifests
+        run: |
+          kubeconform -strict -ignore-missing-schemas -kubernetes-version 1.32.0 \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            deploy/manifests/*.yaml
+
+  docker-build-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build train image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: train
+          push: false
+          platforms: linux/arm64
+
+  build-and-push:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute image tag
+        id: meta
+        run: |
+          echo "image=ghcr.io/${{ github.repository_owner }}/aporiax-forecast-train" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-$(echo ${{ github.sha }} | cut -c1-12)" >> "$GITHUB_OUTPUT"
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: train
+          push: true
+          platforms: linux/arm64
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+      # ADR-0006 회귀 가드: arm64 노드에 amd64-only 이미지를 배포한 사고 이후.
+      # 배포 시점이 아니라 빌드 시점에 아치 불일치를 잡는다.
+      - name: Verify linux/arm64 manifest
+        run: |
+          INSPECT=$(docker buildx imagetools inspect "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}")
+          echo "$INSPECT"
+          echo "$INSPECT" | grep -q "linux/arm64" || {
+            echo "::error::linux/arm64 platform not found in pushed manifest"
+            exit 1
+          }
