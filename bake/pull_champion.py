@@ -42,11 +42,15 @@ def main() -> None:
     joblib.dump(model, "model/model.joblib")
 
     run = client.get_run(mv.run_id)
+    # feature_set은 서빙이 코드-모델 짝을 검증하는 데 쓴다(구 스키마 모델을 새 코드로
+    # 서빙하면 조용히 틀린 예측이 난다). 학습이 태그로 남긴 값을 그대로 옮긴다.
     meta = {
         "model_name": name,
         "version": mv.version,
         "run_id": mv.run_id,
         "alias": None if version_override else alias,
+        "feature_set": run.data.tags.get("feature_set"),
+        "prediction_mode": run.data.tags.get("prediction_mode"),
         "metrics": run.data.metrics,
     }
     with open("model/meta.json", "w") as fh:
